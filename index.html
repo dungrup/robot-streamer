@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ZED Pub/Sub Viewer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .panel { background: #1c1c1c; border: 1px solid #333; border-radius: 6px; padding: 10px; }
+    .panel h2 { font-size: 13px; margin: 0 0 6px; color: #9cf; text-transform: uppercase; letter-spacing: 0.5px; }
+    img { max-width: 720px; display: block; background: #000; }
+    pre { margin: 0; font-size: 12px; max-width: 480px; white-space: pre-wrap; word-break: break-word; }
+    .meta { color: #888; font-size: 11px; margin-top: 6px; }
+    .status { position: fixed; top: 8px; right: 12px; font-size: 12px; }
+    .ok { color: #6f6; } .bad { color: #f66; }
+    .delay { font-size: 11px; margin-top: 4px; font-family: monospace; }
+    .delay-good { color: #6f6; } .delay-warn { color: #fa0; } .delay-bad { color: #f66; }
+  </style>
+</head>
+<body>
+  <h1>ZED &rarr; Google Cloud Pub/Sub Viewer</h1>
+  <div class="status" id="status">connecting&hellip;</div>
+
+  <div class="row">
+    <div class="panel">
+      <h2>camera (robot-camera)</h2>
+      <img id="cam" alt="no frame yet" />
+      <div class="meta" id="cam-meta">&mdash;</div>
+      <div class="delay" id="cam-delay">delay: &mdash;</div>
+    </div>
+    <div class="panel">
+      <h2>pose (zed-pose)</h2>
+      <pre id="pose">waiting&hellip;</pre>
+      <div class="delay" id="pose-delay">delay: &mdash;</div>
+    </div>
+    <div class="panel">
+      <h2>odom (zed-odom)</h2>
+      <pre id="odom">waiting&hellip;</pre>
+      <div class="delay" id="odom-delay">delay: &mdash;</div>
+    </div>
+  </div>
+
+<script>
+const status = document.getElementById("status");
+const camImg = document.getElementById("cam");
+const camMeta = document.getElementById("cam-meta");
+const camDelay = document.getElementById("cam-delay");
+const poseEl = document.getElementById("pose");
+const poseDelay = document.getElementById("pose-delay");
+const odomEl = document.getElementById("odom");
+const odomDelay = document.getElementById("odom-delay");
+
+let lastCamStamp = null;
+
+function fmt(obj) {
+  return JSON.stringify(obj, (_, v) => typeof v === "number" ? +v.toFixed(4) : v, 2);
+}
+
+function showDelay(el, ms) {
+  if (ms === null || ms === undefined) { el.textContent = "delay: —"; el.className = "delay"; return; }
+  const cls = ms < 200 ? "delay-good" : ms < 1000 ? "delay-warn" : "delay-bad";
+  el.textContent = `delay: ${ms.toFixed(1)} ms`;
+  el.className = `delay ${cls}`;
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => { status.textContent = "connected"; status.className = "status ok"; };
+  ws.onclose = () => {
+    status.textContent = "disconnected — retrying";
+    status.className = "status bad";
+    setTimeout(connect, 1500);
+  };
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+    const d = data.delays_ms || {};
+
+    const cam = data.camera;
+    if (cam && cam.data_b64) {
+      const stamp = cam.header?.stamp_ns;
+      if (stamp !== lastCamStamp) {
+        lastCamStamp = stamp;
+        const mime = (cam.format || "").includes("png") ? "image/png" : "image/jpeg";
+        camImg.src = `data:${mime};base64,${cam.data_b64}`;
+        camMeta.textContent = `frame_id=${cam.header?.frame_id} stamp_ns=${stamp} format=${cam.format}`;
+      }
+    }
+    showDelay(camDelay, d.camera);
+
+    if (data.pose) {
+      const { header, position, orientation } = data.pose;
+      poseEl.textContent = fmt({ header, position, orientation });
+    }
+    showDelay(poseDelay, d.pose);
+
+    if (data.odom) {
+      const { header, child_frame_id, pose, twist } = data.odom;
+      odomEl.textContent = fmt({
+        header,
+        child_frame_id,
+        position: pose?.position,
+        orientation: pose?.orientation,
+        linear: twist?.linear,
+        angular: twist?.angular,
+      });
+    }
+    showDelay(odomDelay, d.odom);
+  };
+}
+connect();
+</script>
+</body>
+</html>
